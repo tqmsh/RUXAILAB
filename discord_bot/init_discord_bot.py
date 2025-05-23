@@ -10,7 +10,7 @@ import json
 import asyncio
 import threading
 from firestore import load_data_from_firestore
-from role_utils import determine_role
+from role_utils import determine_role, get_next_role
 from auth import get_github_username, wait_for_username, start_flask
 
 # Load env vars
@@ -102,11 +102,17 @@ async def unlink(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="getstats", description="Displays your GitHub stats and current role")
-async def getstats(interaction: discord.Interaction): 
+@app_commands.describe(type="Type of stats to display: pr, issue, or commit (default: pr)")
+async def getstats(interaction: discord.Interaction, type: str = "pr"): 
     contributions, user_mappings = load_data_from_firestore()
-    print("getstats")
+    print(f"getstats - type: {type}")
     """Display user's GitHub stats and current role."""
     try:
+        # Normalize the type parameter
+        stats_type = type.lower().strip()
+        if stats_type not in ["pr", "issue", "commit"]:
+            stats_type = "pr"  # Default to PR stats
+        
         user_id = str(interaction.user.id)
         github_username = user_mappings.get(user_id)
         print(user_id)
@@ -136,18 +142,87 @@ async def getstats(interaction: discord.Interaction):
             user_data["commits_count"]
         )
 
-        embed = discord.Embed(
-            title=f"GitHub Stats for {github_username}",
-            color=discord.Color.blue()
-        )
-        embed.add_field(name="Merged PRs", value=str(user_data["pr_count"]), inline=True)
-        embed.add_field(name="Issues Opened", value=str(user_data["issues_count"]), inline=True)
-        embed.add_field(name="Commits", value=str(user_data["commits_count"]), inline=True)
-        embed.add_field(name="PR Role", value=pr_role, inline=True)
-        embed.add_field(name="Issue Role", value=issue_role if issue_role else "None", inline=True)
-        embed.add_field(name="Commit Role", value=commit_role if commit_role else "None", inline=True)
+        # Set up type-specific variables
+        if stats_type == "pr":
+            count_field = "pr_count"
+            stats_field = "prs"
+            role = pr_role
+            title_prefix = "PR"
+        elif stats_type == "issue":
+            count_field = "issues_count"
+            stats_field = "issues"
+            role = issue_role if issue_role else "None"
+            title_prefix = "Issue"
+        elif stats_type == "commit":
+            count_field = "commits_count"
+            stats_field = "commits"
+            role = commit_role if commit_role else "None"
+            title_prefix = "Commit"
 
-        await interaction.response.send_message(embed=embed)
+        # Check if enhanced stats are available
+        if "stats" in user_data and stats_field in user_data["stats"]:
+            # Get enhanced stats
+            stats = user_data["stats"]
+            type_stats = stats[stats_field]
+            
+            # Create enhanced embed
+            embed = discord.Embed(
+                title=f"GitHub Stats for {github_username}",
+                description=f"Daily stats tracking at {stats.get('tracking_since', 'March 24, 2025')}, at 00:00:00 PDT (Pacific Daylight Time)",
+                color=discord.Color.blue()
+            )
+            
+            # Create stats table
+            stats_table = f"```\n{title_prefix}s         Count    Place\n"
+            stats_table += f"Daily:         {type_stats['daily']}        #{user_data.get('rankings', {}).get(f'{stats_type}_daily', 0)}\n"
+            stats_table += f"Weekly:        {type_stats['weekly']}        #{user_data.get('rankings', {}).get(f'{stats_type}_weekly', 0)}\n"
+            stats_table += f"Monthly:       {type_stats['monthly']}       #{user_data.get('rankings', {}).get(f'{stats_type}_monthly', 0)}\n"
+            stats_table += f"All-time:      {type_stats['all_time']}       #{user_data.get('rankings', {}).get(stats_type, 0)}\n\n"
+            
+            # Add averages and streaks
+            stats_table += f"Average/day ({stats.get('current_month', 'March')}): {type_stats.get('avg_per_day', 0)} {title_prefix}s\n\n"
+            stats_table += f"Current {title_prefix} streak: {type_stats.get('current_streak', 0)} {title_prefix}s\n"
+            stats_table += f"Longest {title_prefix} streak: {type_stats.get('longest_streak', 0)} {title_prefix}s\n```"
+            
+            # Add level information based on role
+            embed.add_field(name="Statistics", value=stats_table, inline=False)
+            embed.add_field(name="Current level:", value=f"@{role}", inline=True)
+            
+            # Determine next level using role_utils instead of hardcoded logic
+            next_level = get_next_role(role, stats_type)
+            
+            embed.add_field(name="Next level:", value=next_level, inline=True)
+            
+            # Add info about other stat types
+            other_types = []
+            if stats_type != "pr":
+                other_types.append(f"`/getstats type:pr` - View PR stats")
+            if stats_type != "issue":
+                other_types.append(f"`/getstats type:issue` - View Issue stats")
+            if stats_type != "commit":
+                other_types.append(f"`/getstats type:commit` - View Commit stats")
+                
+            embed.add_field(
+                name="Other Statistics:", 
+                value="\n".join(other_types),
+                inline=False
+            )
+            
+            await interaction.response.send_message(embed=embed)
+        else:
+            # Use basic embed format if enhanced stats aren't available
+            embed = discord.Embed(
+                title=f"GitHub Stats for {github_username}",
+                color=discord.Color.blue()
+            )
+            embed.add_field(name="Merged PRs", value=str(user_data["pr_count"]), inline=True)
+            embed.add_field(name="Issues Opened", value=str(user_data["issues_count"]), inline=True)
+            embed.add_field(name="Commits", value=str(user_data["commits_count"]), inline=True)
+            embed.add_field(name="PR Role", value=pr_role, inline=True)
+            embed.add_field(name="Issue Role", value=issue_role if issue_role else "None", inline=True)
+            embed.add_field(name="Commit Role", value=commit_role if commit_role else "None", inline=True)
+
+            await interaction.response.send_message(embed=embed)
 
     except Exception as e:
         await interaction.response.send_message(

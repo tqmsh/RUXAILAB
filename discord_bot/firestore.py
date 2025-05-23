@@ -15,28 +15,50 @@ except Exception as e:
     exit(1)
 
 # ---------- Firestore Helper Functions ----------
-def update_user_in_firestore(discord_id, pr_count, issues_count, commits_count):
+def update_user_in_firestore(discord_id, user_data):
+    """
+    Update a user's contribution data in Firestore.
+    
+    Args:
+        discord_id: The Discord user ID
+        user_data: Dictionary containing the user's contribution data
+    """
     doc_ref = db.collection('discord').document(discord_id)
     doc = doc_ref.get()
     
+    # Extract the basic contribution counts
+    pr_count = user_data.get('pr_count', 0)
+    issues_count = user_data.get('issues_count', 0)
+    commits_count = user_data.get('commits_count', 0)
+    
     # Determine the role using the determine_role function
     pr_role, issue_role, commit_role = determine_role(pr_count, issues_count, commits_count)
+    
     # Format the roles as a comma-separated string
     role = ', '.join(filter(None, [pr_role, issue_role, commit_role]))  # Filter out None values and join
 
-    data = {
+    # Create the update data
+    update_data = {
         'pr_count': pr_count,
         'issues_count': issues_count,
         'commits_count': commits_count,
-        'role': role  # Update the role field
+        'role': role
     }
+    
+    # Add enhanced stats if available
+    if 'stats' in user_data:
+        update_data['stats'] = user_data['stats']
+    
+    # Add rankings if available
+    if 'rankings' in user_data:
+        update_data['rankings'] = user_data['rankings']
 
     if doc.exists:
-        doc_ref.update(data)
+        doc_ref.update(update_data)
     else:
-        # Optional: set default values for missing fields
+        # Set default values for missing fields
         doc_ref.set({
-            **data,
+            **update_data,
             'github_id': None
         })
 
@@ -56,11 +78,23 @@ def load_data_from_firestore():
                 continue
 
             discord_id = doc.id
-            contributions[github_id] = {
+            
+            # Create base contribution data
+            user_data = {
                 'pr_count': data.get('pr_count', 0),
                 'issues_count': data.get('issues_count', 0),
                 'commits_count': data.get('commits_count', 0)
             }
+            
+            # Add enhanced stats if available
+            if 'stats' in data:
+                user_data['stats'] = data['stats']
+            
+            # Add rankings if available
+            if 'rankings' in data:
+                user_data['rankings'] = data['rankings']
+            
+            contributions[github_id] = user_data
             user_mappings[discord_id] = github_id
     except Exception as e:
         print(f"Firestore read error: {e}")
@@ -87,12 +121,9 @@ for github_id, user_data in contributions.items():
             if not doc.exists:
                 continue
             discord_id = doc.id
-            update_user_in_firestore(
-                discord_id,
-                user_data.get('pr_count', 0),
-                user_data.get('issues_count', 0),
-                user_data.get('commits_count', 0)
-            )
+            
+            # Pass the entire user_data object
+            update_user_in_firestore(discord_id, user_data)
     except Exception as e:
         print(f"Error updating Firestore for GitHub user {github_id}: {e}")
 
